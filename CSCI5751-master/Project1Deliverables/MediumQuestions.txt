@@ -1,0 +1,177 @@
+1) How does a restaurant in one metropolitan area compare to the same business in another area (assuming they are a chain)?
+	Step 1. Find chain restaurants by counting businesses with same name
+		#Python Code
+		import json
+		import dicttoxml
+		import sys
+
+		def takeSecond(elem):
+		    return elem[1]
+
+		source_dataset_path = "../data/dataset_no_nulls/"
+		file = "../business_same_name_count.txt"
+		name_cnt = {}
+		with open(source_dataset_path  +'business_no_nulls.json', "r") as ins:
+		    for line in ins:
+		        try:
+		            json_obj = json.loads(line)
+		            if "name" not in json_obj:
+		                continue
+
+		            name = json_obj["name"]
+		            if name not in name_cnt:
+		                name_cnt[name] = 0
+		            name_cnt[name] = name_cnt[name] + 1
+		        except ValueError:
+		            print("err")
+
+		bus_list = []
+		for k, v in name_cnt.items():
+		    bus_list.append((k, v))
+		bus_list.sort(key=takeSecond, reverse=True)
+		with open(file, "w") as out:
+		    for bus in bus_list:
+		        out.write(bus[0] + "," + str(bus[1]) + "\n")
+
+	Step 2. for a given business, find average ratings per state
+	#XQuery Code
+	let  $business := /root/business
+
+	let $bus_with_same_name :=(
+		for $x in $business
+		where $x/name="KFC"
+		return $x
+	)
+
+	let $bus_xml := (
+		let $xml:=(
+		for $x in $bus_with_same_name
+		return
+			<business city="{$x/city}" state="{$x/state}"> {data($x/stars)} </business>)
+		return
+			<BB>
+			{$xml}
+			</BB>
+	)
+
+	let $avg_rating := avg(data($bus_xml/business))
+	let $result :=(
+		for $v in distinct-values($bus_xml/business/@state)
+		return 
+			<state name="{$v}"> {avg(data($bus_xml/business[@state=$v]))} </state>
+		)
+
+	return $result
+
+
+2) Which users are considered more reliable reviewers (i.e. Which users have more useful/fun/cool reviews (top 5%))?
+#XQuery Code to subset top tier user/funny/cool rated reviewers
+#This process only shows useful, but it is repeated for funny and cool as well
+let  $data := data(/root/review/useful)
+let $mean :=  avg($data)
+let $s :=(
+for $d in $data
+let $tmp := ($d - $mean)*($d - $mean)
+return $tmp
+)
+let $total :=  math:pow( (sum($s) div count($data) ),0.5)
+let $top_percent := 10 * $total
+let $result_id := /root/review[useful >= $top_percent]/review_id
+return <useful>
+<id>{$result_id}</id>
+</useful>
+
+#Python Code
+import numpy as np
+import pandas as pd
+import xml.etree.ElementTree as ET
+files = ["../funny_user_ids.xml", "../useful_user_ids.xml", "../cool_user_ids.xml"]
+funny_useful_cool_ids = []
+for f in files:
+    xml = ET.parse(f)
+    ids = []
+    for elem in xml.iter():
+        ids.append(elem.text)
+    funny_useful_cool_ids.append(ids)
+#dictionary is now filled with files and ID's
+user_file = "../user_name_and_id.xml"
+user_xml = ET.parse(user_file)
+user_dict = {}
+count = 0
+value = ""
+for e in user_xml.iter():
+    if count == 0:
+        value = e.text
+        count += 1
+    elif count == 1:
+        user_dict[e.text] = value
+        count = 0
+funny_people = []
+for id in funny_useful_cool_ids[0]:
+    funny_people.append(user_dict.get(id))
+useful_people = []
+for id in funny_useful_cool_ids[1]:
+    useful_people.append(user_dict.get(id))
+cool_people = []
+for id in funny_useful_cool_ids[2]:
+    cool_people.append(user_dict.get(id))
+funny_people = list(filter(None, funny_people))
+useful_people = list(filter(None, useful_people))
+cool_people = list(filter(None, cool_people))
+print ("Funny People:")
+print funny_people
+print ("Useful People:")
+print useful_people
+print ("Cool People:")
+print cool_people
+
+3) Do friends have similar ratings?
+4) Which businesses have higher/lower rating in terms of business category?
+#XQuery Code
+let $business := /root/business
+let $bus :=(
+for $x in $business
+where contains($x/categories, "IT")
+return $x)
+let $mean := avg($bus/review_count)
+let $s :=(
+for $d in $bus/review_count
+let $tmp := ($d - $mean)*($d - $mean)
+return $tmp
+)
+let $total :=  math:pow( (sum($s) div count($bus) ),0.5)
+let $top_percent := 3*$total
+let $result_id := $bus[stars = 5 and review_count >= $top_percent]/name|$bus[stars = 5 and review_count >= $top_percent]/city|$bus[stars = 5 and review_count >= $top_percent]/state|$bus[stars = 5 and review_count >= $top_percent]/review_count
+return $result_id
+
+5) Are there some attributes that affect on business rating?
+	ex: businesses with garage have higher rating than those with no garage
+	#XQuery Code
+	let  $business := /root/business
+
+	let $busAll :=(
+	for $x in $business
+	where $x/attributes/Wifi!="qqqqqqq"
+	return $x)
+	let $busNoAtt :=(
+	for $x in $business
+	where $x/attributes/Wifi="True"
+	return $x)
+	let $busWithAtt :=(
+	for $x in $business
+	where $x/attributes/Wifi!="False"
+	return $x)
+
+	let $rAll := avg($busAll/stars)
+	let $cAll := count($busAll)
+	let $rNo := avg($busNoAtt/stars)
+	let $cNo := count($busNoAtt)
+	let $rWi := avg($busWithAtt/stars)
+	let $cWi := count($busWithAtt)
+	return 
+		<data>
+		<rating name="all" cnt="{$cAll}"> {$rAll} </rating>
+		<rating name="with" cnt="{$cWi}"> {$rWi} </rating>
+		<rating name="no" cnt="{$cNo}" > {$rNo} </rating>
+		</data>
+

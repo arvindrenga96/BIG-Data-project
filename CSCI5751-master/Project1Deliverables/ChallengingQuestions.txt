@@ -1,0 +1,378 @@
+1) Why do the different metropolitan areas have different tendencies in which businesses they like/dislike?
+	Step 1. Find chain restaurants by counting businesses with same name
+		#Python Code
+		import json
+		import dicttoxml
+		import sys
+
+		def takeSecond(elem):
+		    return elem[1]
+
+		source_dataset_path = "../data/dataset_no_nulls/"
+		file = "../business_same_name_count.txt"
+		name_cnt = {}
+		with open(source_dataset_path  +'business_no_nulls.json', "r") as ins:
+		    for line in ins:
+		        try:
+		            json_obj = json.loads(line)
+		            if "name" not in json_obj:
+		                continue
+
+		            name = json_obj["name"]
+		            if name not in name_cnt:
+		                name_cnt[name] = 0
+		            name_cnt[name] = name_cnt[name] + 1
+		        except ValueError:
+		            print("err")
+
+		bus_list = []
+		for k, v in name_cnt.items():
+		    bus_list.append((k, v))
+		bus_list.sort(key=takeSecond, reverse=True)
+		with open(file, "w") as out:
+		    for bus in bus_list:
+		        out.write(bus[0] + "," + str(bus[1]) + "\n")
+
+	Step 2. for a given business, find average ratings per state
+	#XQuery Code
+	let  $business := /root/business
+
+	let $bus_with_same_name :=(
+		for $x in $business
+		where $x/name="KFC"
+		return $x
+	)
+
+	let $bus_xml := (
+		let $xml:=(
+		for $x in $bus_with_same_name
+		return
+			<business city="{$x/city}" state="{$x/state}"> {data($x/stars)} </business>)
+		return
+			<BB>
+			{$xml}
+			</BB>
+	)
+
+	let $avg_rating := avg(data($bus_xml/business))
+	let $result :=(
+		for $v in distinct-values($bus_xml/business/@state)
+		return 
+			<state name="{$v}"> {avg(data($bus_xml/business[@state=$v]))} </state>
+		)
+
+	return $result
+
+2) the socioeconomic level of an area based on the number of checkins?
+#XQuery Code to Subset Business and Checkin
+Business:
+/root/business/city | /root/business/business_id
+Checkin:
+/root/checkin/business_id
+
+#Python Code
+import xml.etree.ElementTree as ET
+business_file = "../business_biz_id.xml"
+business_xml = ET.parse(business_file)
+business_dict = {}
+count = 0
+value = ""
+city = ""
+for e in business_xml.iter():
+    if count == 0:
+        #business_id
+        value = e.text
+        count += 1
+    elif count == 1:
+        #city
+        if e.text in business_dict:
+            business_dict[e.text] = business_dict[e.text] + [value]
+        else:
+            business_dict[e.text] = [value]
+        count = 0
+#dictionary is filled with city:[business_ids]
+checkin_file = "../checkin_biz_id.xml"
+checkin_xml = ET.parse(checkin_file)
+#iterate through checkin ids and count how many checkins for each city
+city_count = {}
+for id in checkin_xml.iter():
+    for d in business_dict:
+        if id.text in business_dict[d]:
+            if d in city_count:
+                city_count[d] = city_count.get(d) + 1
+            else:
+                city_count[d] = 0
+print city_count
+
+3) Plot the business locations according to their business categories on a map 
+
+
+step 1: extracting the data using xquery
+
+let $all_business := /root/business
+
+
+let $business_element := (
+  for $business in $all_business where $business//is_open = 1
+  return 
+  <business> 
+  {$business//business_id}
+  {$business//name}
+  {$business//latitude}
+  {$business//longitude}
+  {$business//starts}
+  {$business//review_count}
+  {$business//categories}
+  </business>
+)
+  
+  return <root>{$business_element}</root>
+
+step 2: filtering and formating in python
+
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Sun Oct 27 18:44:42 2019
+
+@author: pal00007
+"""
+
+import xml.etree.ElementTree as ET
+import os
+import pandas as pd
+from mlxtend.preprocessing import TransactionEncoder
+from mlxtend.frequent_patterns import apriori, association_rules
+import time 
+import getpass
+from collections import defaultdict
+import json 
+
+st = time.time()
+
+data_folder = "/home/pal00007/Documents/big_data/CSCI5751/data"
+extracted_info = "advanced2.xml"
+
+extracted_business_info = os.path.join(data_folder, extracted_info)
+
+tree = ET.parse(extracted_business_info)
+        
+all_categories_list = []
+
+for child in tree.iter('categories'):
+    cat = child.text.split(",")
+    
+    def strip(s):
+        return s.strip()
+    
+    cat = list(map(strip, cat))
+    all_categories_list.append(cat)
+
+te = TransactionEncoder()
+te_ary = te.fit(all_categories_list).transform(all_categories_list)
+df = pd.DataFrame(te_ary, columns=te.columns_)
+frequent_itemsets = apriori(df, min_support=0.01, use_colnames=True)   
+frequent_itemsets['length'] = frequent_itemsets['itemsets'].apply(lambda x: len(x))
+
+#subset_1 = frequent_itemsets[ (frequent_itemsets['length'] == 1) & (frequent_itemsets['support'] >= 0.01)]
+
+res = association_rules(frequent_itemsets, metric="confidence", min_threshold=1)
+res['consequent_len'] = res['consequents'].apply(lambda x: len(x))
+
+#extracting the data where length of the consequent is 1
+res_1 = res[ (res['consequent support'] >= 0.05) & (res['consequent_len'] == 1) ]
+
+#extracting
+main_categories = res_1['consequents'].tolist()
+
+#business_latlong
+new_list = []
+for e in main_categories:
+    (x), = e
+    new_list.append(x)
+    
+new_list = set(new_list)
+
+
+business_latlong = defaultdict(list)
+
+root = tree.getroot()
+for child in root: 
+    categories = set(child.find('categories').text.split(',')) 
+    high_level_category = categories.intersection(new_list)
+    
+    if len(high_level_category) > 0:
+        (high_level_category), = high_level_category
+        lat = child.find('latitude').text
+        long = child.find('longitude').text
+        loc = [lat, long]
+        
+        business_latlong[high_level_category].append(loc)
+
+
+file = json.dumps(business_latlong)
+f = open(os.path.join(data_folder, "business_latlong_json1.json"), "w")
+f.write(file)
+f.close()
+
+f = open(os.path.join(data_folder, "business_latlong_txt1.txt"), "w")
+f.write(str(business_latlong))
+f.close()
+
+
+step 3: Visualizing the locations of three categories: Food, Automotive and Home Services
+
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Thu Oct 31 20:47:51 2019
+
+@author: pal00007
+"""
+
+from gmplot import *
+import os
+import geopandas
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import json
+#%%
+data_folder = "/home/pal00007/Documents/big_data/CSCI5751/data"
+
+
+#https://www.geeksforgeeks.org/python-plotting-google-map-using-gmplot-package/
+gmap = gmplot.GoogleMapPlotter(37.428, -130.145, 4)
+gmap.apikey = 'AIzaSyArIFr43eixG87ARefxdcv06OohPrGwYfE'
+
+
+
+with open(os.path.join(data_folder,"business_latlong_json.json")) as location_data:
+    data = json.load(location_data)
+    
+#%%
+
+
+colors = ['r', 'g', 'b']
+keys = ['Food', 'Automotive', 'Home Services']
+data_3cat = { key: data[key] for key in keys}
+
+for i, key in enumerate(data_3cat):
+    locations = data_3cat[key]
+    locations_tofloat = [list(map(float, i)) for i in locations]
+    
+    #extracting data only for USA
+    locations_usa = [[i, j] for [i,j] in locations_tofloat if 19 <= i <=64 and -162 <= j <= -70 ]
+    
+    locations_usa = np.array(locations_usa)
+    latitude = locations_usa[:,0]
+    longitude = locations_usa[:,1]
+    
+    gmap.scatter( latitude[:20], longitude[:20], color = colors[i] ,  size = 40)
+
+
+gmap.draw(os.path.join(data_folder,"map.html"))
+ 
+
+4) Can you tell whether a review is good or bad based on review text?
+	step 1. count the occurrence of words in review 
+	#Python Code
+	import json
+	import dicttoxml
+	import sys
+
+	def takeSecond(elem):
+	    return elem[1]
+
+	source_dataset_path = "../data/dataset_no_nulls/"
+	file = "../word_count.txt"
+	word_cnt = {}
+	with open(source_dataset_path  +'review_no_nulls.json', "r") as ins:
+	    for line in ins:
+	        try:
+	            json_obj = json.loads(line)
+	            if "text" not in json_obj:
+	                continue
+
+	            text = json_obj["text"].upper()
+	            words = text.split()
+	            for w in words:
+	                if w not in word_cnt:
+	                    word_cnt[w] = 0
+	                word_cnt[w] = word_cnt[w] + 1
+	        except ValueError:
+	            print("err")
+
+	word_list = []
+	for k, v in word_cnt.items():
+	    word_list.append((k, v))
+	word_list.sort(key=takeSecond, reverse=True)
+	with open(file, "w") as out:
+	    for word in word_list:
+	        out.write(word[0] + "," + str(word[1]) + "\n")
+
+	step 2. Find average stars of reviews that include a given word and compare it against overall average stars.
+	#XQuery Code
+	let $reviews := /root/review
+	let $words := ("HORRIBLE", "GREAT")
+	let $result := (
+		for $w in $words
+			let $reviews_filtered :=(
+				for $x in $reviews
+				where contains(upper-case($x/text), $w)
+				return $x)
+		return 
+			<stat word="{$w}"> {avg($reviews_filtered/stars)} </stat>
+	)
+	return $result
+
+
+	Step 3. For a given review, we could possibly say whether it is positive or negative based on its content (not using its star). 
+
+
+5) Can you correlate the Environmental Health Safety Inspection rating for Glendale businesses to their Yelp ratings?
+#XQuery code to subset the business table
+let $lv_bus := /root/business[city eq "Las Vegas"]
+return $lv_bus/city | $lv_bus/state | $lv_bus/stars | $lv_bus/address | $lv_bus/name
+
+#Python Code to Process
+import xml.etree.ElementTree as ET
+import csv
+import json
+glendale_xml_file = '../lv_data.xml'
+glendale_csv_file = '../../../CSCI5751/Project1/Glendale_Data/Restaurant_Inspections.csv'
+#city/name/state/stars/address <- BaseX
+glendale_basex_xml = ET.parse(glendale_xml_file)
+fieldnames = ("Serial Number","Permit Number","Restaurant Name","Location Name","Category Name","Address","City","State","Zip","Current Demerits","Current Grade","Date Current","Inspection Date","Inspection Time","Employee ID","Inspection Type","Inspection Demerits","Inspection Grade","Permit Status","Inspection Result","Violations","Record Updated","Location")
+glendale_csv_json = {}
+with open(glendale_csv_file, 'r') as csvfile:
+    reader = csv.DictReader(csvfile,fieldnames)
+    for row in reader:
+        glendale_csv_json[(row["Address"]).lower()] = row
+count = 0
+value = []
+xml_dict = {}
+for e in glendale_basex_xml.iter():
+    if count == 0:
+        #city
+        value = [e.text]
+        count += 1
+    elif count == 5:
+        if e.text is not None:
+            xml_dict[e.text.encode('utf-8').lower()] = value
+        count = 0
+    else:
+        value += [e.text]
+        count += 1
+grade_dict = {}
+for addr in xml_dict:
+    if addr in glendale_csv_json:
+        if glendale_csv_json[addr]["Current Grade"] not in grade_dict:
+            grade_dict[glendale_csv_json[addr]["Current Grade"]] = [float(xml_dict[addr][4]),1]
+        else:
+            avg = grade_dict[glendale_csv_json[addr]["Current Grade"]][0] * grade_dict[glendale_csv_json[addr]["Current Grade"]][1]
+            grade_dict[glendale_csv_json[addr]["Current Grade"]][1] += 1
+            avg = avg + float(xml_dict[addr][4])
+            avg = avg / grade_dict[glendale_csv_json[addr]["Current Grade"]][1]
+            grade_dict[glendale_csv_json[addr]["Current Grade"]][0] = avg
+print grade_dict
